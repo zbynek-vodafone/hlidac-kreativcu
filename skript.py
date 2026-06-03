@@ -40,8 +40,7 @@ def stahni_vsechny_kreativce():
             
             for o in vsechny_odkazy:
                 href = o['href']
-                # Hledáme jakýkoliv odkaz, který v sobě má unikátní kód ID (formát UUID: 8-4-4-4-12 znaků)
-                # Příklad: /cs/galerie-kreativcu/1dc0d808-457c-4e20-aaed-9eb9ae37957b
+                # Hledáme unikátní kód ID v adrese (UUID formát)
                 if re.search(r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}', href):
                     if href not in odkazy_na_profily:
                         odkazy_na_profily.append(href)
@@ -57,12 +56,12 @@ def stahni_vsechny_kreativce():
                     odkaz = "https://www.kreativnicesko.cz" + odkaz
                 vsechny_profily.append({"url": odkaz})
                 
-            time.sleep(1.5)
+            time.sleep(1)
             stranka += 1
             if stranka > 45: # Projdeme kompletně celý web
                 break
         except Exception as e:
-            print(f"Chyba při skenování: {e}")
+            print(f"Chyba při skenování galerie: {e}")
             break
             
     unikatni_profily = {p['url']: p for p in vsechny_profily}.values()
@@ -76,44 +75,73 @@ def stahni_detaily_profilu(session, url_profilu):
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
             
-            # 1. Získání skutečného Jména kreativce z nadpisu h1
+            # 1. Jméno z H1
             h1_tag = soup.find('h1')
             if h1_tag:
                 detaily["jmeno"] = h1_tag.text.strip()
             
-            # 2. Získání IČO
-            for text in soup.stripped_strings:
-                if "IČO" in text or "Ičo" in text:
-                    match = re.search(r'\d{6,10}', text) # Hledáme číslo o délce typického IČO
-                    if match:
-                        detaily["ico"] = match.group(0)
-                        break
-                    else:
-                        rodic = soup.find(text=text)
-                        if rodic and rodic.find_next():
-                            match_sub = re.search(r'\d{6,10}', rodic.find_next().text)
-                            if match_sub:
-                                detaily["ico"] = match_sub.group(0)
-                                break
-
-            # 3. Získání TELEFONU (přeskakujeme pevné linky ministerstva začínající na +4202)
-            tel_tags = soup.find_all('a', href=re.compile(r'^tel:'))
-            for t in tel_tags:
+            # 2. Bezpečné hledání IČO přes texty na stránce
+            for element in soup.find_all(string=re.compile(r'IČO|Ičo')):
+                text = element.strip()
+                match = re.search(r'\d{6,10}', text)
+                if match:
+                    detaily["ico"] = match.group(0)
+                    break
+            
+            # 3. Telefon
+            for t in soup.find_all('a', href=re.compile(r'^tel:')):
                 tel_text = t.text.strip()
                 if tel_text and not tel_text.replace(" ", "").startswith('+4202'):
                     detaily["telefon"] = tel_text
                     break
             
-            # 4. Získání EMAILU (přeskakujeme maily ministerstva a webu)
-            mail_tags = soup.find_all('a', href=re.compile(r'^mailto:'))
-            for m in mail_tags:
+            # 4. Email
+            for m in soup.find_all('a', href=re.compile(r'^mailto:')):
                 mail_text = m.text.strip()
                 if mail_text and "mk.gov.cz" not in mail_text and "kreativnicesko" not in mail_text:
                     detaily["email"] = mail_text
                     break
     except Exception as e:
-        print(f"Chyba detailu u {url_profilu}: {e}")
+        print(f"Chyba detailu u {url_profilu}: {e} (profil přeskočen)")
     return detaily
 
 def hlavni_funkce():
-    session = requests.
+    session = requests.Session()
+    stare_urls = []
+    
+    print("Ptám se Google tabulky na historii...")
+    try:
+        res_urls = session.post(WEBHOOK_URL, json={"akce": "get_urls"}, timeout=15)
+        stare_urls = res_urls.json().get("urls", [])
+        print(f"V Google tabulce je uloženo {len(stare_urls)} odkazů.")
+    except:
+        print("Historii se z tabulky nepodařilo načíst, jedeme od nuly.")
+
+    aktualni_seznam = stahni_vsechny_kreativce()
+    if not aktualni_seznam:
+        print("Žádná data nebyla stažena.")
+        return
+
+    novi_kreativci = []
+    for k in aktualni_seznam:
+        if k["url"] not in stare_urls:
+            try:
+                print(f"Stahuji kontakt pro profil: {k['url']}")
+                detaily = stahni_detaily_profilu(session, k["url"])
+                novi_kreativci.append({
+                    "jmeno": detaily["jmeno"],
+                    "url": k["url"],
+                    "ico": detaily["ico"],
+                    "telefon": detaily["telefon"],
+                    "email": detaily["email"]
+                })
+                time.sleep(0.5)
+            except Exception as e:
+                print(f"Chyba při zpracování profilu {k['url']}: {e}")
+                continue
+
+    if novi_kreativci:
+        print(f"Odesílám {len(novi_kreativci)} nováčků do Google Sheets...")
+        velikost_bloku = 20
+        for i in range(0, len(novi_kreativci), velikost_bloku):
+            blok = novi_kreativci
