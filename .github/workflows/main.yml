@@ -2,16 +2,18 @@ name: Denni Kontrola Kreativcu
 on:
   schedule:
     - cron: '0 7 * * *' # Spustí se každý den v 7:00 ráno
-  workflow_dispatch: # Tohle políčko ti umožní spustit test ručně tlačítkem
+  workflow_dispatch: # Povolení ručního spuštění
 
 jobs:
   run-script:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # Tohle je pojistka, která dává skriptu právo zapisovat
     steps:
       - name: Automatické stažení kódu
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4 # Upgradováno na v4
       - name: Nastavení Pythonu
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5 # Upgradováno na v5
         with:
           python-version: '3.x'
       - name: Instalace potřebných doplňků
