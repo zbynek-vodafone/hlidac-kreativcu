@@ -1,0 +1,27 @@
+name: Denni Kontrola Kreativcu
+on:
+  schedule:
+    - cron: '0 7 * * *' # Spustí se každý den v 7:00 ráno
+  workflow_dispatch: # Tohle políčko ti umožní spustit test ručně tlačítkem
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Automatické stažení kódu
+        uses: actions/checkout@v3
+      - name: Nastavení Pythonu
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+      - name: Instalace potřebných doplňků
+        run: pip install requests beautifulsoup4
+      - name: Spuštění hlídače
+        run: python skript.py
+      - name: Uložení změn (databáze) do GitHubu
+        run: |
+          git config --global user.name 'Denni Automat'
+          git config --global user.email 'automat@github.com'
+          git add stary_seznam.json
+          git commit -m "Aktualizace databáze kontaktů" || exit 0
+          git push
