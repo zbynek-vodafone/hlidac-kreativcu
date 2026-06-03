@@ -8,12 +8,12 @@ jobs:
   run-script:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Tohle je pojistka, která dává skriptu právo zapisovat
+      contents: write # Povolení zápisu do repository
     steps:
       - name: Automatické stažení kódu
-        uses: actions/checkout@v4 # Upgradováno na v4
+        uses: actions/checkout@v4
       - name: Nastavení Pythonu
-        uses: actions/setup-python@v5 # Upgradováno na v5
+        uses: actions/setup-python@v5
         with:
           python-version: '3.x'
       - name: Instalace potřebných doplňků
@@ -21,9 +21,12 @@ jobs:
       - name: Spuštění hlídače
         run: python skript.py
       - name: Uložení změn (databáze) do GitHubu
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Oficiální klíč pro bezpečný zápis
         run: |
           git config --global user.name 'Denni Automat'
           git config --global user.email 'automat@github.com'
+          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git
           git add stary_seznam.json
           git commit -m "Aktualizace databáze kontaktů" || exit 0
-          git push
+          git push origin HEAD:${{ github.ref_name }}
