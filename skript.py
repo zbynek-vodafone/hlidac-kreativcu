@@ -31,77 +31,86 @@ def stahni_vsechny_kreativce():
         try:
             res = session.get(url_stranky, headers=HEADERS, timeout=15)
             if res.status_code != 200:
-                print(f"Web vrátil kód {res.status_code}")
                 break
                 
             soup = BeautifulSoup(res.text, 'html.parser')
-            
-            # Najdeme VŠECHNY odkazy na webu a vyfiltrujeme ty, které vedou na profil umělce
             vsechny_odkazy = soup.find_all('a', href=True)
             odkazy_na_profily = []
             
             for o in vsechny_odkazy:
                 href = o['href']
-                # Hledáme odkazy, které v sobě mají typickou adresu profilu kreativce
-                if "/kreativec/" in href or "/galerie-kreativcu/" in href or "creative" in str(o.get('class', '')):
-                    if href not in odkazy_na_profily and not href.endswith('galerie-kreativcu'):
+                if "/cs/galerie-kreativcu/" in href and len(href.split('/')) > 4:
+                    if href not in odkazy_na_profily:
                         odkazy_na_profily.append(href)
             
-            print(f"Na stránce {stranka} nalezeno {len(odkazy_na_profily)} potenciálních profilů.")
-            
-            # Pokud nic nenajdeme přes specifické filtry, zkusíme najít jakoukoli kartu
             if not odkazy_na_profily:
-                profily_zaloha = soup.find_all('div', class_=re.compile("creative|item|card"))
-                print(f"Záložní hledání našlo {len(profily_zaloha)} prvků.")
+                print("Žádné další profily na této stránce.")
                 break
                 
             for odkaz in odkazy_na_profily:
                 if not odkaz.startswith('http'):
                     odkaz = "https://www.kreativnicesko.cz" + odkaz
+                vsechny_profily.append({"url": odkaz})
                 
-                # Zkusíme vytáhnout nějaké jméno, nebo použijeme text odkazu
-                jmeno = "Kreativec"
-                vsechny_profily.append({"jmeno": jmeno, "url": odkaz})
-                
-            time.sleep(2)
+            time.sleep(1.5)
             stranka += 1
-            if stranka > 2: # Pro rychlé ověření nám stačí projít 2 stránky
+            if stranka > 45: # Pojistka pro projití celého webu
                 break
         except Exception as e:
-            print(f"Chyba: {e}")
+            print(f"Chyba při skenování: {e}")
             break
             
-    # Odstraníme duplicity
     unikatni_profily = {p['url']: p for p in vsechny_profily}.values()
     print(f"=== KONEC: Celkem nalezeno {len(unikatni_profily)} unikátních profilů ===")
     return list(unikatni_profily)
 
 def stahni_detaily_profilu(session, url_profilu):
-    detaily = {"ico": "Nezadáno", "telefon": "Nezadáno", "email": "Nezadáno"}
+    detaily = {"jmeno": "Nezadáno", "ico": "Nezadáno", "telefon": "Nezadáno", "email": "Nezadáno"}
     try:
         res = session.get(url_profilu, headers=HEADERS, timeout=10)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
             
-            # Hledání IČO
+            # 1. Získání skutečného Jména kreativce
+            h1_tag = soup.find('h1')
+            if h1_tag:
+                detaily["jmeno"] = h1_tag.text.strip()
+            
+            # 2. Získání IČO (hledáme čisté číslo za textem IČO)
             for text in soup.stripped_strings:
                 if "IČO" in text or "Ičo" in text:
-                    # Zkusíme vzít text následující za ním
-                    detaily["ico"] = text.replace("IČO:", "").replace("IČO", "").strip()
+                    match = re.search(r'\d+', text)
+                    if match:
+                        detaily["ico"] = match.group(0)
+                        break
+                    else:
+                        # Pokud je číslo v dalším elementu
+                        rodic = soup.find(text=text)
+                        if rodic:
+                            sourozenec = rodic.find_next()
+                            if sourozenec:
+                                match_sub = re.search(r'\d+', sourozenec.text)
+                                if match_sub:
+                                    detaily["ico"] = match_sub.group(0)
+                                    break
+
+            # 3. Získání TELEFONU (přeskakujeme systémové odkazy)
+            tel_tags = soup.find_all('a', href=re.compile(r'^tel:'))
+            for t in tel_tags:
+                tel_text = t.text.strip()
+                if tel_text and not tel_text.startswith('+4202'): # Ignorujeme linky ministerstva
+                    detaily["telefon"] = tel_text
                     break
             
-            # Hledání telefonu a mailu
-            tel_tag = soup.find('a', href=re.compile(r'^tel:'))
-            if tel_tag: detaily["telefon"] = tel_tag.text.strip()
-            
-            mail_tag = soup.find('a', href=re.compile(r'^mailto:'))
-            if mail_tag: detaily["email"] = mail_tag.text.strip()
-            
-            # Pokus o získání skutečného jména z nadpisu stránky (h1)
-            h1_tag = soup.find('h1')
-            if h1_tag: detaily["jmeno"] = h1_tag.text.strip()
-    except:
-        pass
+            # 4. Získání EMAILU (přeskakujeme ministerstvo kultury)
+            mail_tags = soup.find_all('a', href=re.compile(r'^mailto:'))
+            for m in mail_tags:
+                mail_text = m.text.strip()
+                if mail_text and "mk.gov.cz" not in mail_text and "kreativnicesko" not in mail_text:
+                    detaily["email"] = mail_text
+                    break
+    except Exception as e:
+        print(f"Chyba detailu u {url_profilu}: {e}")
     return detaily
 
 def hlavni_funkce():
@@ -124,10 +133,12 @@ def hlavni_funkce():
     novi_kreativci = []
     for k in aktualni_seznam:
         if k["url"] not in stare_urls:
-            print(f"Zpracovávám profil: {k['url']}")
+            print(f"Stahuji kontakt pro profil: {k['url']}")
             detaily = stahni_detaily_profilu(session, k["url"])
+            
+            # Zapíšeme pouze pokud jsme našli alespoň reálné jméno
             novi_kreativci.append({
-                "jmeno": detaily.get("jmeno", "Kreativec"),
+                "jmeno": detaily["jmeno"],
                 "url": k["url"],
                 "ico": detaily["ico"],
                 "telefon": detaily["telefon"],
@@ -136,12 +147,17 @@ def hlavni_funkce():
             time.sleep(1)
 
     if novi_kreativci:
-        print(f"Odesílám {len(novi_kreativci)} profilů do Google Sheets...")
-        try:
-            odezva = session.post(WEBHOOK_URL, json={"novacci": novi_kreativci}, timeout=15)
-            print(f"Výsledek zápisu: {odezva.text}")
-        except Exception as e:
-            print(f"Chyba odesílání: {e}")
+        print(f"Odesílám {len(novi_kreativci)} nováčků do Google Sheets...")
+        # Rozdělíme odesílání po blocích (max 20 najednou), aby Google neshodil spojení pro timeout
+        velikost_bloku = 20
+        for i in range(0, len(novi_kreativci), velikost_bloku):
+            blok = novi_kreativci[i:i+velikost_bloku]
+            try:
+                odezva = session.post(WEBHOOK_URL, json={"novacci": blok}, timeout=15)
+                print(f"Blok {i//velikost_bloku + 1}: {odezva.text}")
+            except Exception as e:
+                print(f"Chyba odesílání bloku: {e}")
+            time.sleep(1)
     else:
         print("Žádná nová data k odeslání.")
 
