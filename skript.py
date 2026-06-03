@@ -31,6 +31,7 @@ def stahni_vsechny_kreativce():
         try:
             res = session.get(url_stranky, headers=HEADERS, timeout=15)
             if res.status_code != 200:
+                print(f"Web vrátil status kód: {res.status_code}")
                 break
                 
             soup = BeautifulSoup(res.text, 'html.parser')
@@ -39,12 +40,16 @@ def stahni_vsechny_kreativce():
             
             for o in vsechny_odkazy:
                 href = o['href']
-                if "/cs/galerie-kreativcu/" in href and len(href.split('/')) > 4:
+                # Hledáme jakýkoliv odkaz, který v sobě má unikátní kód ID (formát UUID: 8-4-4-4-12 znaků)
+                # Příklad: /cs/galerie-kreativcu/1dc0d808-457c-4e20-aaed-9eb9ae37957b
+                if re.search(r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}', href):
                     if href not in odkazy_na_profily:
                         odkazy_na_profily.append(href)
             
+            print(f"Na stránce {stranka} nalezeno podle ID filtru {len(odkazy_na_profily)} profilů.")
+            
             if not odkazy_na_profily:
-                print("Žádné další profily na této stránce.")
+                print("Žádné další profily s ID kódem nenalezeny. Končím skenování webu.")
                 break
                 
             for odkaz in odkazy_na_profily:
@@ -54,7 +59,7 @@ def stahni_vsechny_kreativce():
                 
             time.sleep(1.5)
             stranka += 1
-            if stranka > 45: # Pojistka pro projití celého webu
+            if stranka > 45: # Projdeme kompletně celý web
                 break
         except Exception as e:
             print(f"Chyba při skenování: {e}")
@@ -71,38 +76,35 @@ def stahni_detaily_profilu(session, url_profilu):
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
             
-            # 1. Získání skutečného Jména kreativce
+            # 1. Získání skutečného Jména kreativce z nadpisu h1
             h1_tag = soup.find('h1')
             if h1_tag:
                 detaily["jmeno"] = h1_tag.text.strip()
             
-            # 2. Získání IČO (hledáme čisté číslo za textem IČO)
+            # 2. Získání IČO
             for text in soup.stripped_strings:
                 if "IČO" in text or "Ičo" in text:
-                    match = re.search(r'\d+', text)
+                    match = re.search(r'\d{6,10}', text) # Hledáme číslo o délce typického IČO
                     if match:
                         detaily["ico"] = match.group(0)
                         break
                     else:
-                        # Pokud je číslo v dalším elementu
                         rodic = soup.find(text=text)
-                        if rodic:
-                            sourozenec = rodic.find_next()
-                            if sourozenec:
-                                match_sub = re.search(r'\d+', sourozenec.text)
-                                if match_sub:
-                                    detaily["ico"] = match_sub.group(0)
-                                    break
+                        if rodic and rodic.find_next():
+                            match_sub = re.search(r'\d{6,10}', rodic.find_next().text)
+                            if match_sub:
+                                detaily["ico"] = match_sub.group(0)
+                                break
 
-            # 3. Získání TELEFONU (přeskakujeme systémové odkazy)
+            # 3. Získání TELEFONU (přeskakujeme pevné linky ministerstva začínající na +4202)
             tel_tags = soup.find_all('a', href=re.compile(r'^tel:'))
             for t in tel_tags:
                 tel_text = t.text.strip()
-                if tel_text and not tel_text.startswith('+4202'): # Ignorujeme linky ministerstva
+                if tel_text and not tel_text.replace(" ", "").startswith('+4202'):
                     detaily["telefon"] = tel_text
                     break
             
-            # 4. Získání EMAILU (přeskakujeme ministerstvo kultury)
+            # 4. Získání EMAILU (přeskakujeme maily ministerstva a webu)
             mail_tags = soup.find_all('a', href=re.compile(r'^mailto:'))
             for m in mail_tags:
                 mail_text = m.text.strip()
@@ -114,52 +116,4 @@ def stahni_detaily_profilu(session, url_profilu):
     return detaily
 
 def hlavni_funkce():
-    session = requests.Session()
-    stare_urls = []
-    
-    print("Ptám se Google tabulky na historii...")
-    try:
-        res_urls = session.post(WEBHOOK_URL, json={"akce": "get_urls"}, timeout=15)
-        stare_urls = res_urls.json().get("urls", [])
-        print(f"V Google tabulce je uloženo {len(stare_urls)} odkazů.")
-    except:
-        print("Historii se nepodařilo načíst, jedeme od nuly.")
-
-    aktualni_seznam = stahni_vsechny_kreativce()
-    if not aktualni_seznam:
-        print("Žádná data nebyla stažena.")
-        return
-
-    novi_kreativci = []
-    for k in aktualni_seznam:
-        if k["url"] not in stare_urls:
-            print(f"Stahuji kontakt pro profil: {k['url']}")
-            detaily = stahni_detaily_profilu(session, k["url"])
-            
-            # Zapíšeme pouze pokud jsme našli alespoň reálné jméno
-            novi_kreativci.append({
-                "jmeno": detaily["jmeno"],
-                "url": k["url"],
-                "ico": detaily["ico"],
-                "telefon": detaily["telefon"],
-                "email": detaily["email"]
-            })
-            time.sleep(1)
-
-    if novi_kreativci:
-        print(f"Odesílám {len(novi_kreativci)} nováčků do Google Sheets...")
-        # Rozdělíme odesílání po blocích (max 20 najednou), aby Google neshodil spojení pro timeout
-        velikost_bloku = 20
-        for i in range(0, len(novi_kreativci), velikost_bloku):
-            blok = novi_kreativci[i:i+velikost_bloku]
-            try:
-                odezva = session.post(WEBHOOK_URL, json={"novacci": blok}, timeout=15)
-                print(f"Blok {i//velikost_bloku + 1}: {odezva.text}")
-            except Exception as e:
-                print(f"Chyba odesílání bloku: {e}")
-            time.sleep(1)
-    else:
-        print("Žádná nová data k odeslání.")
-
-if __name__ == "__main__":
-    hlavni_funkce()
+    session = requests.
